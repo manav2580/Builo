@@ -52,9 +52,8 @@ const buildingSchema = new mongoose.Schema({
     required:true
   },
   features: [{
-    // Each image's feature vector
-    imageId: { type: String }, // Identifier for the image
-    vector: { type: [Number] }, // Feature vector for the image
+    image_url: { type: String }, // Identifier for the image
+    feature_vector: { type: [Number] }, // Feature vector for the image
   }],
 });
 buildingSchema.plugin(AutoIncrement, { inc_field: 'id' });

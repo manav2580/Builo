@@ -1,6 +1,8 @@
 import base64
+import csv
 import os
 import random
+from fastapi.responses import JSONResponse
 import numpy as np
 import faiss
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Query
@@ -24,7 +26,6 @@ from pymongo import MongoClient
 from PIL import Image
 from tensorflow.keras.applications import EfficientNetB3
 from tensorflow.keras.preprocessing.image import img_to_array
-
 
 app = FastAPI()
 
@@ -157,7 +158,80 @@ async def classify(input_image: UploadFile = File(...), latitude: float = 0.0, l
         return {"detail": str(e)}
 
 @app.post("/test/")
-async def test_model(
+async def test_model(num_tests: int = Form(20), crop_ratio: float = Form(0.2), rotation_range: int = Form(45)):
+    global faiss_index, labels, file_paths
+    try:
+        if faiss_index is None or len(labels) == 0:
+            raise HTTPException(status_code=400, detail="Feature database is empty. Load features first.")
+
+        # Load features from stored .npz file
+        data = np.load("features.npz")
+        labels_list = data["labels"].tolist()
+        file_paths_list = data["file_paths"].tolist()
+
+        if len(labels_list) == 0:
+            raise HTTPException(status_code=404, detail="No features found in the stored file.")
+
+        correct_predictions = 0
+        results = []
+
+        for _ in range(num_tests):
+            test_idx = random.randint(0, len(file_paths_list) - 1)
+            img_path = file_paths_list[test_idx]
+            true_label = labels_list[test_idx]
+
+            # Load and preprocess image
+            img = Image.open(img_path).convert("RGB")
+
+            # Apply Random Crop
+            if crop_ratio > 0:
+                w, h = img.size
+                crop_w, crop_h = int(w * crop_ratio), int(h * crop_ratio)
+                left, top = random.randint(0, crop_w), random.randint(0, crop_h)
+                right, bottom = w - random.randint(0, crop_w), h - random.randint(0, crop_h)
+                img = img.crop((left, top, right, bottom))
+
+            # Apply Random Rotation
+            if rotation_range > 0:
+                angle = random.uniform(-rotation_range, rotation_range)
+                img = img.rotate(angle)
+
+            # Resize and extract features
+            img = img.resize((300, 300))
+            img_array = np.expand_dims(np.array(img), axis=0)
+            img_array = preprocess_input(img_array)
+
+            input_feature = base_model.predict(img_array).flatten()
+            input_feature /= np.linalg.norm(input_feature)
+
+            # Faiss Search
+            _, best_match_idx = faiss_index.search(np.array([input_feature]), 1)
+            best_match_idx = best_match_idx[0][0]
+            predicted_label = labels_list[best_match_idx]
+
+            is_correct = (true_label == predicted_label)
+            correct_predictions += is_correct
+
+            results.append({
+                "true_label": true_label,
+                "predicted_label": predicted_label,
+                "is_correct": is_correct
+            })
+
+        accuracy = (correct_predictions / num_tests) * 100
+
+        return {
+            "total_tests": num_tests,
+            "correct_predictions": correct_predictions,
+            "accuracy": f"{accuracy:.2f}%",
+            "results": results,
+        }
+    except Exception as e:
+        return {"detail": str(e)}
+    
+
+@app.post("/testusingdb/")
+async def test_model_database(
     num_tests: int = Form(20),
     crop_ratio: float = Form(0.2),
     rotation_range: int = Form(45)

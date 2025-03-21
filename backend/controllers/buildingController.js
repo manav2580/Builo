@@ -1,7 +1,7 @@
 const Building = require('../models/buildingModel');
 const catchAsyncErrors = require('../middleware/catchAsyncErrors');
 const NodeGeocoder = require('node-geocoder');
-
+const axios=require('axios');
 const geocoder = NodeGeocoder({
     provider: 'openstreetmap', // You can also use 'google', 'mapquest', etc.
     httpAdapter: 'https',     // Use https for secure requests
@@ -110,17 +110,22 @@ exports.filterByName=catchAsyncErrors(async(req,res,next)=>{
 
 })
 exports.getAllBuildings = catchAsyncErrors(async (req, res, next) => {
-    try {
-      const buildings = await Building.find();
-      res.status(200).json({
-        success: true,
-        data: buildings,
-      });
-    } catch (error) {
-      next(error); // Pass any errors to the error-handling middleware
-    }
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10; // Set limit per request
+  const skip = (page - 1) * limit;
+
+  const buildings = await Building.find().skip(skip).limit(limit);
+
+  res.status(200).json({
+      success: true,
+      total: await Building.countDocuments(),
+      page,
+      limit,
+      buildings
   });
-  exports.groupByName = catchAsyncErrors(async (req, res, next) => {
+});
+
+exports.groupByName = catchAsyncErrors(async (req, res, next) => {
     try {
       // Fetch all buildings from the database
       const buildings = await Building.find();
@@ -168,3 +173,51 @@ exports.getAllBuildings = catchAsyncErrors(async (req, res, next) => {
       next(error); // Pass the error to the error handler middleware
     }
   });
+
+exports.getCurrentLocation = catchAsyncErrors(async (req, res, next) => {
+    try {
+        console.log("🔹 getCurrentLocation API called"); // Debug Start
+
+        // Get public IP address
+        const ipResponse = await axios.get('https://api64.ipify.org?format=json');
+        console.log("✅ IP Response Received:", ipResponse.data);
+        const ip = ipResponse.data.ip;
+
+        // Fetch geolocation details using IP
+        const locationResponse = await axios.get(`https://ipapi.co/${ip}/json/`);
+        console.log("✅ Location Response Received:", locationResponse.data);
+
+        const { latitude, longitude, city, region, country_name, postal } = locationResponse.data;
+        if (!latitude || !longitude) {
+            console.error("❌ Could not determine location");
+            throw new Error('Could not determine location');
+        }
+
+        // Reverse geocode for more details
+        console.log("🔄 Fetching reverse geolocation...");
+        const locationData = await geocoder.reverse({ lat: latitude, lon: longitude });
+        console.log("✅ Reverse Geocode Data:", locationData);
+
+        const location = locationData[0];
+
+        res.status(200).json({
+            success: true,
+            latitude,
+            longitude,
+            city: city || location.city || '',
+            state: region || location.state || '',
+            country: country_name || location.country || '',
+            zipcode: postal || location.zipcode || '',
+            address: location.formattedAddress || '',
+            rawData: location
+        });
+
+    } catch (error) {
+        console.error("❌ Error in getCurrentLocation:", error.message);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching current location',
+            error: error.message
+        });
+    }
+});

@@ -16,7 +16,7 @@ db = client['test']
 building_collection = db['buildings']
 
 # Initialize Feature Extractor
-model = EfficientNetB3(weights="imagenet", include_top=False, pooling="avg")
+model = EfficientNetB3(weights='imagenet', include_top=False, pooling='avg')
 
 def extract_features_from_url(img_url):
     """Download the image from the URL and extract features."""

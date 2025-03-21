@@ -17,8 +17,11 @@ cloudinary.config({
 mongoose.connect("mongodb+srv://manavshah:manavshah@cluster0.0ni9x.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0", {
   useNewUrlParser: true,
   useUnifiedTopology: true,
-}).then(() => console.log('MongoDB connected'))
-  .catch(err => console.log(err));
+}).then(() => console.log('✅ MongoDB connected'))
+  .catch(err => console.error('❌ MongoDB Connection Error:', err));
+
+// File to log skipped images
+const skippedImagesFile = 'skipped_images.txt';
 
 // Function to upload images to Cloudinary
 const uploadToCloudinaryWithRetry = async (filePath, retries = 3, delay = 1000) => {
@@ -28,11 +31,12 @@ const uploadToCloudinaryWithRetry = async (filePath, retries = 3, delay = 1000) 
       const result = await cloudinary.uploader.upload(filePath, { folder: 'building_images' });
       return { public_id: result.public_id, url: result.secure_url };
     } catch (error) {
-      console.error(`Attempt ${attempt + 1}: Cloudinary Upload Error:`, error);
+      console.error(`⚠️ Attempt ${attempt + 1}: Cloudinary Upload Error for ${filePath}:`, error.message);
       if (attempt < retries - 1) {
         await new Promise((resolve) => setTimeout(resolve, delay)); // Wait before retrying
       } else {
-        console.error(`Failed to upload ${filePath} after ${retries} attempts.`);
+        console.error(`❌ Failed to upload ${filePath} after ${retries} attempts.`);
+        fs.appendFileSync(skippedImagesFile, `${filePath}\n`); // Save skipped image path
         return null; // Return null if all attempts fail
       }
     }
@@ -40,12 +44,12 @@ const uploadToCloudinaryWithRetry = async (filePath, retries = 3, delay = 1000) 
   }
 };
 
+// Function to process CSV and insert data in batches
+const processCSVAndInsertData = async (csvFilePath, imagesFolderPath, batchSize = 50) => {
+  console.log('📂 Reading CSV File...');
 
-// Function to process CSV and insert into the database
-const processCSVAndInsertData = async (csvFilePath, imagesFolderPath) => {
-  const buildings = {}; // Stores buildings with images grouped by building name
-
-  const promises = []; // Store all async operations here
+  const buildings = {}; // Store building details grouped by building name
+  const imageUploadQueue = []; // Stores async image upload tasks
 
   fs.createReadStream(csvFilePath)
     .pipe(csvParser())
@@ -53,58 +57,64 @@ const processCSVAndInsertData = async (csvFilePath, imagesFolderPath) => {
       const image_name = row['Image Name']; // Use the exact column name
       const latitude = row['Latitude'];
       const longitude = row['Longitude'];
-      const buildingName = image_name.split('_').slice(0, 4).join(' '); // Get the common prefix for the building name
+      const buildingName = image_name.split('_').slice(0, 4).join(' '); // Get common prefix for building name
 
-      // Add an async operation to the promises array
-      promises.push(
-        (async () => {
-          if (!buildings[buildingName]) {
-            // If not, create a new building entry
-            buildings[buildingName] = {
-              buildingName,
-              latitude: parseFloat(latitude),
-              longitude: parseFloat(longitude),
-              exteriorImage: [],
-              allImages: [],
-              address: `Random address for ${buildingName}`,
-              country: 'Random Country',
-              price: Math.floor(Math.random() * 500000) + 100000, // Random price
-              description: `Description for ${buildingName}`,
-            };
-          }
+      if (!buildings[buildingName]) {
+        buildings[buildingName] = {
+          buildingName,
+          latitude: parseFloat(latitude),
+          longitude: parseFloat(longitude),
+          exteriorImage: [],
+          allImages: [],
+          address: `Random address for ${buildingName}`,
+          country: 'Random Country',
+          price: Math.floor(Math.random() * 500000) + 100000, // Random price
+          description: `Description for ${buildingName}`,
+        };
+      }
 
-          // Get the full image path
-          const imagePath = path.join(imagesFolderPath, image_name);
+      const imagePath = path.join(imagesFolderPath, image_name);
+      imageUploadQueue.push({ imagePath, buildingName });
+    })
+    .on('end', async () => {
+      console.log(`✅ CSV file read successfully! ${imageUploadQueue.length} images found.`);
+      console.log(`🚀 Starting batch processing with batch size ${batchSize}...`);
 
-          // Upload image to Cloudinary
+      let processedCount = 0;
+      for (let i = 0; i < imageUploadQueue.length; i += batchSize) {
+        const batch = imageUploadQueue.slice(i, i + batchSize);
+        console.log(`📦 Processing batch ${i / batchSize + 1} (${batch.length} images)...`);
+
+        const uploadPromises = batch.map(async ({ imagePath, buildingName }) => {
           const uploadedImage = await uploadToCloudinaryWithRetry(imagePath);
           if (uploadedImage) {
-            console.log(uploadedImage);
-            // Add the uploaded image to both exteriorImage and allImages arrays
             buildings[buildingName].exteriorImage.push(uploadedImage);
             buildings[buildingName].allImages.push(uploadedImage);
           }
-        })()
-      );
-    })
-    .on('end', async () => {
-      try {
-        // Wait for all async operations to complete
-        await Promise.all(promises);
+        });
 
-        // Insert buildings into the database
+        await Promise.all(uploadPromises);
+        processedCount += batch.length;
+        console.log(`✅ ${processedCount}/${imageUploadQueue.length} images processed.`);
+      }
+
+      console.log('📊 Upload complete. Now inserting data into MongoDB...');
+
+      try {
         const buildingDocuments = Object.values(buildings);
         await Building.insertMany(buildingDocuments);
-        console.log('Buildings inserted successfully!');
+        console.log(`✅ Successfully inserted ${buildingDocuments.length} buildings into MongoDB!`);
       } catch (error) {
-        console.error('Error processing CSV:', error);
+        console.error('❌ MongoDB Insert Error:', error);
       } finally {
         mongoose.connection.close();
+        console.log('🔌 MongoDB connection closed.');
+        console.log(`📄 Skipped images are logged in '${skippedImagesFile}'`);
       }
     });
 };
 
 // Provide paths to the CSV and images folder
-const csvFilePath = 'C:/Users/priti/Desktop/Builo/ImageRecognition/image_locations.csv'; // Path to your CSV file
-const imagesFolderPath = 'C:/Users/priti/Desktop/Builo/ImageRecognition/ImagesBuildings/Outside Images Train'; // Path to your images folder
-processCSVAndInsertData(csvFilePath, imagesFolderPath);
+const csvFilePath = 'C:/Users/priti/Desktop/Builo/ImageRecognition/image_locations.csv';
+const imagesFolderPath = 'C:/Users/priti/Desktop/Builo/ImageRecognition/TrainingImages/Exterior';
+processCSVAndInsertData(csvFilePath, imagesFolderPath, 50);
